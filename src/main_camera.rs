@@ -10,6 +10,7 @@ use std::thread::sleep;
 
 const CMD_DEVICES : &str = "devices";
 const CMD_RUN : &str = "run";
+const CMD_LEDSTEST : &str = "ledstest";
 const ARG_DEVICEID : &str = "deviceid";
 
 struct GPIO{
@@ -31,12 +32,22 @@ impl GPIO {
             if pin.get_direction()? != Direction::Out {
                 pin.set_direction(Direction::Out)?;
             }
-            if pin.get_value()? != 0 {
-                pin.set_value(0)?;
+            if pin.get_value()? != 1 {
+                pin.set_value(1)?;
             }
         }
         Ok(())
     }
+    pub fn test(&self) -> Result<()> {
+        for pin in &self.pins {
+            println!("Activating PIN {}",pin.get_pin());
+            pin.set_value(0)?;
+            std::thread::sleep( std::time::Duration::from_millis(200) );
+            pin.set_value(1)?;
+        }
+        Ok(())
+    }
+
     pub fn signal(&self, level: usize) -> Result<()> {
         println!("SIGNAL: {}",level);
         let len = self.pins.len();
@@ -69,6 +80,12 @@ fn cmd_device_list() -> Result<()> {
 
 fn cmd_run(device_id : String) {
     capture_video(device_id).expect("failed to capture video");
+}
+
+fn cmd_leds_test() {
+    let gpio = GPIO::new();
+    gpio.init().expect("Cannot init GPIOs");
+    gpio.test().expect("Cannot test GPIOs");
 }
 
 fn capture_video(device_id : String) -> Result<()> {
@@ -168,6 +185,9 @@ fn main() -> Result<()> {
             SubCommand::with_name(CMD_DEVICES)
             .about("Lists found local devices"))
         .subcommand(
+            SubCommand::with_name(CMD_LEDSTEST)
+            .about("Test leds"))
+        .subcommand(
             SubCommand::with_name(CMD_RUN)
             .about("Execute the application")
             .arg(Arg::with_name(ARG_DEVICEID).required(true).takes_value(true).index(1)))
@@ -179,6 +199,9 @@ fn main() -> Result<()> {
     } else if let Some(matches) = matches.subcommand_matches(CMD_RUN) {
         let device_id = matches.value_of(ARG_DEVICEID).unwrap();
         Ok(cmd_run(device_id.to_string()))
+    } else if let Some(matches) = matches.subcommand_matches(CMD_LEDSTEST) {
+        cmd_leds_test();
+        Ok(())
     } else {
         unreachable!()
     }
