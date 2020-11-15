@@ -4,51 +4,15 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::{Arg, App as ClapApp, SubCommand, AppSettings};
 use std::io::prelude::*;
+use nannou::prelude::*;
 use once_cell::sync::OnceCell;
-use sysfs_gpio::{Direction, Pin};
-use std::thread::sleep;
+use nannou::image::{RgbImage, DynamicImage, Rgb};
 
 const CMD_DEVICES : &str = "devices";
 const CMD_RUN : &str = "run";
 const ARG_DEVICEID : &str = "deviceid";
 
-struct GPIO{
-    pins: Vec<Pin>
-}
-impl GPIO {
-    pub fn new() -> Self {
-        let mut pins = Vec::new();
-        for pin_no in 11..=18 {
-            pins.push(Pin::new(pin_no));
-        }
-        GPIO { pins }
-    }
-    pub fn init(&self) -> Result<()> {
-        for pin in &self.pins {
-            if !pin.is_exported() {
-                pin.export().map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, format!("Cannot export pin {}: {}",pin.get_pin(), err) ))?;
-            }
-            if pin.get_direction()? != Direction::Out {
-                pin.set_direction(Direction::Out)?;
-            }
-            if pin.get_value()? != 0 {
-                pin.set_value(0)?;
-            }
-        }
-        Ok(())
-    }
-    pub fn signal(&self, level: usize) -> Result<()> {
-        println!("SIGNAL: {}",level);
-        let len = self.pins.len();
-        for n in 0..len {
-            let value = if n > level { 1 } else { 0 };
-            self.pins[n].set_value(value)?;
-            println!("P {} {}",n,value);
-        }
-        Ok(())
-    }
-}
-
+static VIDEO_FRAME: OnceCell<std::sync::RwLock<Vec<u8>>> = OnceCell::new();
 
 fn cmd_device_list() -> Result<()> {
     let ctx = uvc::Context::new().expect("Could not get context");
@@ -68,7 +32,59 @@ fn cmd_device_list() -> Result<()> {
 }
 
 fn cmd_run(device_id : String) {
-    capture_video(device_id).expect("failed to capture video");
+
+    std::thread::spawn(move || {
+        capture_video(device_id).expect("failed to capture video");
+    });
+
+    nannou::app(model).run();
+}
+
+
+struct Model {
+}
+
+fn model(app: &App) -> Model {
+    // Create a new window!
+    app.new_window().size(512, 512).view(view).build().unwrap();
+    // Load the image from disk and upload it to a GPU texture.
+    Model { }
+}
+
+// Draw the state of your `Model` into the given `Frame` here.
+fn view(app: &App, model: &Model, frame: Frame) {
+    frame.clear(BLACK);
+
+    let draw = app.draw();
+
+    if let Some(video_frame) = VIDEO_FRAME.get() {
+        if let Ok(video_frame) = video_frame.try_read() {
+            let mut global : u64 = 0;
+            let mut image = RgbImage::new(640, 480);
+            let mut offset = 0;
+            for y in 0..480 {
+                for x in 0..640 {
+                    let treshold = 200;
+                    let v = video_frame[offset];
+                    if v > treshold {
+                        global+=1;
+                        image.put_pixel(x, y, Rgb([255,0,0]));
+                    } else {
+                        image.put_pixel(x, y, Rgb([v,v,v]));
+                    }
+                    offset += 2;
+                }
+            }
+
+            let image = DynamicImage::ImageRgb8(image);
+            let texture = wgpu::Texture::from_image(app, &image);
+            draw.texture(&texture);
+
+            draw.text(&format!("{}",global));
+        }
+    }
+
+    draw.to_frame(app, &frame).unwrap();
 }
 
 fn capture_video(device_id : String) -> Result<()> {
@@ -101,7 +117,7 @@ fn capture_video(device_id : String) -> Result<()> {
     let format = uvc::StreamFormat {
         width: 640,
         height: 480,
-        fps: 10,
+        fps: 30,
         format: uvc::FrameFormat::YUYV,
     };
 
@@ -116,34 +132,19 @@ fn capture_video(device_id : String) -> Result<()> {
     // the callback used in the stream
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let gpio = GPIO::new();
-    gpio.init()?;
-
     // Get a stream, calling the closure as callback for every frame
     let image : Vec<u8> = [0u8;614400].to_vec();
     let image_rw = std::sync::RwLock::new(image);
+    VIDEO_FRAME.set(image_rw).expect("cannot set image_rw");
     let stream = streamh
         .start_stream(
-            move |_frame, count| {
-                let treshold = 230;
-                let pindiv = 100;
-
-                let video_frame = _frame.to_bytes();
-                let mut global = 0;
-                let mut offset = 0;
-                for _ in 0..480 {
-                    for _ in 0..640 {
-                        let v = video_frame[offset];
-                        if v > treshold {
-                            global+=1;
-                        }
-                        offset += 2;
+            |_frame, count| {
+                if let Some(video_frame) = VIDEO_FRAME.get() {
+                    if let Ok(mut instance) = video_frame.write() {
+                        instance.clear();
+                        instance.append(&mut Vec::from(_frame.to_bytes()));
                     }
                 }
-
-                gpio.signal(global/pindiv as usize).expect("must set gpios");
-
-                println!("{}",global);
                 count.fetch_add(1, Ordering::SeqCst);
             },
             counter.clone(),

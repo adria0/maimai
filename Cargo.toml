@@ -21,5 +21,6 @@ serde_json = "1.0"
 anyhow = "1.0"
 uvc = { git = "https://github.com/adria0/libuvc-rs.git" }
 clap = "2.33"
-nannou = "0.15"
+# nannou = "0.15"
 once_cell =  "1.5"
+sysfs_gpio = "0.5"
